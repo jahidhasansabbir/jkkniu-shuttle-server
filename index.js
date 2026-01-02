@@ -137,7 +137,7 @@ io.on("connection", (socket) => {
     console.log("📩 Phone data:", data);
 
     data.source = "phone";
-    data.deviceId = data.deviceId || socket.id;
+    data.deviceId = data.busId || socket.id;
 
     // save to MongoDB
     if (locationColl) {
