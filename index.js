@@ -51,8 +51,10 @@ mqttClient.on("message", async (topic, message) => {
     const data = JSON.parse(message.toString());
     console.log("📩 ESP MQTT data:", data);
 
-    // mark source as ESP32
     data.source = "ESP32";
+
+    // ensure each ESP has a unique ID
+    data.deviceId = data.deviceId || topic.split("/")[1] || "unknown_esp";
 
     // save to MongoDB
     if (locationColl) {
@@ -62,8 +64,8 @@ mqttClient.on("message", async (topic, message) => {
       });
     }
 
-    // broadcast to frontend (socket.io)
-    io.emit("location-update", data);
+    // broadcast to frontend per device
+    io.emit(`location-update-${data.deviceId}`, data);
 
   } catch (err) {
     console.error("❌ MQTT parse error:", err.message);
@@ -79,9 +81,37 @@ async function run() {
     locationColl = client.db("shuttleDB").collection("locations");
     console.log("✅ MongoDB connected");
 
+    // updated shuttleInfo API
     app.get('/shuttleInfo', async (req, res) => {
-      const result = await locationColl.find().toArray();
-      res.send(result);
+      try {
+        if (!locationColl) return res.status(500).send({ error: "DB not ready" });
+
+        const allLocations = await locationColl.find().toArray();
+
+        // group by deviceId
+        const devices = {};
+        allLocations.forEach(loc => {
+          if (!loc.deviceId) loc.deviceId = loc.source + "_unknown";
+          if (!devices[loc.deviceId]) devices[loc.deviceId] = [];
+          devices[loc.deviceId].push(loc);
+        });
+
+        // get latest location per device
+        const latestPerDevice = {};
+        Object.keys(devices).forEach(deviceId => {
+          const sorted = devices[deviceId].sort((a, b) => b.receivedAt - a.receivedAt);
+          latestPerDevice[deviceId] = sorted[0];
+        });
+
+        res.send({
+          allDevices: devices,
+          latestLocations: latestPerDevice
+        });
+
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ error: "Server error" });
+      }
     });
 
   } finally {}
@@ -107,6 +137,7 @@ io.on("connection", (socket) => {
     console.log("📩 Phone data:", data);
 
     data.source = "phone";
+    data.deviceId = data.deviceId || socket.id;
 
     // save to MongoDB
     if (locationColl) {
@@ -116,8 +147,8 @@ io.on("connection", (socket) => {
       });
     }
 
-    // broadcast to viewers
-    io.emit("location-update", data);
+    // broadcast to frontend per device
+    io.emit(`location-update-${data.deviceId}`, data);
   });
 
   socket.on("disconnect", () => {
